@@ -1,88 +1,84 @@
 # Mock Interview Assistant API
 
-Azure Web App API host for the Mock Interview Assistant mobile app.
+Backend API host for the Mock Interview Assistant mobile application using FastAPI and Azure Web App.
 
-This deployment hosts only the backend API. The Android app and web frontend do not need to be deployed to this Azure Web App.
+This deployment hosts only the backend API service. The Android app and frontend UI are deployed separately and communicate directly with the Azure-hosted API.
 
-## Azure Runtime
+---
 
-Use an Azure Web App with:
+# Azure Runtime
+
+Create an Azure Web App using:
 
 ```text
 Operating system: Linux
-Runtime stack: Python 3.14
+Runtime stack: Python 3.11
 ```
 
-The hosted app runs FastAPI from:
+The FastAPI application entry point is:
 
 ```text
-backend/app/main.py
+app/main.py
 ```
 
-The mobile app calls the Azure URL directly:
+The mobile app connects directly to:
 
 ```text
 https://your-app-name.azurewebsites.net
 ```
 
-## Files To Push To GitHub
+---
 
-For the Azure API repo, include:
+# GitHub Repository Structure
 
 ```text
-backend/
+.github/
+app/
 requirements.txt
 README.md
 .gitignore
 ```
 
-Do not include:
+Application structure:
 
 ```text
-android/
-frontend/
-node_modules/
-frontend/node_modules/
-.env
-backend/.env
-backend/data/
-*.log
-.idea/
+app/
+├── __init__.py
+├── main.py
+├── services.py
+├── models.py
+├── schemas.py
+├── database.py
+└── config.py
 ```
 
-The old Windows/Node files are not needed for the Linux Python Web App:
+---
 
-```text
-app.js
-package.json
-package-lock.json
-startup.sh
-web.config
-```
+# Azure Startup Command
 
-## Azure Startup Command
-
-In Azure Portal, go to:
+In Azure Portal:
 
 ```text
 Web App > Configuration > General settings > Startup Command
 ```
 
-Set the startup command to:
+Set:
 
 ```bash
-cd backend && python -m uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+gunicorn -w 2 -k uvicorn.workers.UvicornWorker app.main:app
 ```
 
-## Azure App Settings
+---
 
-Add these in:
+# Azure Application Settings
+
+Configure the following in:
 
 ```text
 Azure Portal > Web App > Configuration > Application settings
 ```
 
-Required:
+Required settings:
 
 ```text
 DATABASE_URL=postgresql://postgres.PROJECT_REF:PASSWORD@aws-0-REGION.pooler.supabase.com:6543/postgres?sslmode=require
@@ -91,11 +87,37 @@ OPENAI_WHISPER_API_KEY=your_openai_key
 CORS_ORIGINS=*
 ```
 
-You may use `SUPABASE_DATABASE_URL` instead of `DATABASE_URL`.
+Optional:
 
-Do not commit API keys, database passwords, or `.env` files to GitHub.
+```text
+SUPABASE_DATABASE_URL=your_supabase_connection
+```
 
-## API Endpoints
+Do not commit API keys, database credentials, or `.env` files to GitHub.
+
+---
+
+# Required Python Packages
+
+Example `requirements.txt`:
+
+```text
+fastapi
+uvicorn
+gunicorn
+sqlalchemy
+psycopg[binary]
+python-multipart
+openai
+pydantic
+pydantic-settings
+python-docx
+pypdf
+```
+
+---
+
+# API Endpoints
 
 Examples:
 
@@ -106,49 +128,69 @@ GET    /history
 GET    /jobs
 GET    /resumes
 GET    /jobs/{job_id}/questions
+
 POST   /jobs/analyze
 POST   /jobs/upload
 POST   /resumes/upload
 POST   /questions/generate
 POST   /sessions
+
 PATCH  /sessions/{session_id}
 DELETE /sessions/{session_id}
+
 POST   /responses/evaluate-text
 POST   /responses/evaluate-audio
 POST   /responses/transcribe-audio
 ```
 
-## Mobile App Configuration
+---
 
-Before publishing the Android app, set its backend base URL to your Azure Web App URL:
+# Android Mobile App Configuration
+
+Before releasing the Android app, configure the backend base URL:
 
 ```text
 https://your-app-name.azurewebsites.net
 ```
 
-Do not use these for the published app:
+Do not use local development addresses in production:
 
 ```text
 http://10.0.2.2:8000
 http://localhost:8000
 ```
 
-Those only work for local development.
+These only work for local emulator or local machine testing.
 
-## Local API Test
+---
 
-For local testing, set environment variables first:
+# Local Development
+
+Set environment variables first:
 
 ```powershell
 $env:DATABASE_URL="your_supabase_postgres_url"
 $env:OPENAI_LLM_API_KEY="your_openai_key"
 $env:OPENAI_WHISPER_API_KEY="your_openai_key"
+```
+
+Install dependencies:
+
+```powershell
 pip install -r requirements.txt
-cd backend
+```
+
+Run FastAPI locally:
+
+```powershell
 python -m uvicorn app.main:app --reload --port 8000
 ```
 
-Then test:
+---
+
+# Local API Test
+
+Test the health endpoint:
 
 ```powershell
 Invoke-RestMethod http://localhost:8000/health
@@ -162,12 +204,15 @@ Expected response:
 }
 ```
 
-## Azure Test
+---
 
-After deployment and restart:
+# Azure Deployment Test
+
+After deployment completes and the app restarts:
 
 ```powershell
 $base = "https://your-app-name.azurewebsites.net"
+
 Invoke-RestMethod "$base/health"
 Invoke-RestMethod "$base/ai/status" | ConvertTo-Json -Depth 10
 ```
@@ -179,3 +224,13 @@ Expected `/health` response:
   "status": "ok"
 }
 ```
+
+---
+
+# Notes
+
+* Azure Free Tier may experience cold starts after inactivity.
+* Linux Web App is strongly recommended for FastAPI deployments.
+* Azure automatically installs dependencies from `requirements.txt`.
+* Use PostgreSQL (such as Supabase) instead of SQLite for production deployments.
+* Whisper audio uploads may increase memory usage on lower pricing tiers.
