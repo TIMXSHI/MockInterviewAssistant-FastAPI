@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     openai_scoring_model: str = "gpt-5"
     openai_transcribe_model: str = "whisper-1"
     openai_timeout_seconds: float = 180.0
+    supabase_url: str | None = None
+    supabase_service_role_key: str | None = None
+    supabase_storage_bucket: str = "interview-recordings"
+    default_user_id: str = "default-user"
     supabase_database_url: str | None = None
     database_url: str | None = None
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
