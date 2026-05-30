@@ -1,9 +1,13 @@
 from pathlib import Path
 from uuid import uuid4
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote
+from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
+from starlette.responses import FileResponse, Response as StarletteResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -35,6 +39,8 @@ def ensure_database_schema() -> None:
         response_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(responses)"))}
         if "duration_seconds" not in response_columns:
             connection.execute(text("ALTER TABLE responses ADD COLUMN duration_seconds FLOAT"))
+        if "audio_path" not in response_columns:
+            connection.execute(text("ALTER TABLE responses ADD COLUMN audio_path VARCHAR(500)"))
 
 
 ensure_database_schema()
@@ -48,6 +54,81 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def supabase_storage_enabled() -> bool:
+    return bool(settings.supabase_url and settings.supabase_service_role_key)
+
+
+def supabase_storage_headers(content_type: str | None = None) -> dict[str, str]:
+    if not settings.supabase_service_role_key:
+        raise HTTPException(status_code=500, detail="Supabase service role key is not configured.")
+    headers = {
+        "apikey": settings.supabase_service_role_key,
+        "Authorization": f"Bearer {settings.supabase_service_role_key}",
+    }
+    if content_type:
+        headers["Content-Type"] = content_type
+    return headers
+
+
+def supabase_object_url(object_path: str) -> str:
+    if not settings.supabase_url:
+        raise HTTPException(status_code=500, detail="Supabase URL is not configured.")
+    encoded_path = quote(object_path, safe="/")
+    return f"{settings.supabase_url.rstrip('/')}/storage/v1/object/{settings.supabase_storage_bucket}/{encoded_path}"
+
+
+def upload_audio_object(object_path: str, data: bytes, content_type: str) -> None:
+    request = UrlRequest(
+        supabase_object_url(object_path),
+        data=data,
+        headers={
+            **supabase_storage_headers(content_type),
+            "x-upsert": "false",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=60) as response:
+            if response.status >= 400:
+                raise HTTPException(status_code=502, detail="Supabase Storage upload failed.")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore") or exc.reason
+        raise HTTPException(status_code=502, detail=f"Supabase Storage upload failed: {detail}") from exc
+    except URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Supabase Storage upload failed: {exc.reason}") from exc
+
+
+def download_audio_object(object_path: str) -> tuple[bytes, str]:
+    request = UrlRequest(supabase_object_url(object_path), headers=supabase_storage_headers(), method="GET")
+    try:
+        with urlopen(request, timeout=60) as response:
+            return response.read(), response.headers.get_content_type() or "audio/mp4"
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore") or exc.reason
+        raise HTTPException(status_code=404, detail=f"Recording not found in Supabase Storage: {detail}") from exc
+    except URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Supabase Storage download failed: {exc.reason}") from exc
+
+
+def safe_storage_segment(value: str | int) -> str:
+    segment = "".join(char if char.isalnum() or char in ("-", "_") else "-" for char in str(value).strip())
+    return segment.strip("-") or "unknown"
+
+
+async def persist_uploaded_audio(file: UploadFile, session_id: int, question_id: int) -> tuple[Path, str]:
+    suffix = Path(file.filename or "answer.m4a").suffix or ".m4a"
+    temp_path = AUDIO_DIR / f"{uuid4()}{suffix}"
+    data = await file.read()
+    temp_path.write_bytes(data)
+    if not supabase_storage_enabled():
+        return temp_path, str(temp_path)
+
+    user_segment = safe_storage_segment(settings.default_user_id)
+    object_path = f"users/{user_segment}/sessions/{session_id}/questions/{question_id}/{uuid4()}{suffix}"
+    await run_in_threadpool(upload_audio_object, object_path, data, file.content_type or "audio/mp4")
+    return temp_path, object_path
 
 
 def question_out(question: Question) -> dict:
@@ -82,6 +163,8 @@ def response_out(response: Response) -> dict:
         "question": question_out(response.question) if response.question else None,
         "transcript": response.transcript,
         "duration_seconds": response.duration_seconds,
+        "audio_path": response.audio_path,
+        "audio_url": f"/responses/{response.id}/audio" if response.audio_path else None,
         "evaluation": json_loads(response.evaluation_json, {}),
         "overall_score": response.overall_score,
         "created_at": response.created_at,
@@ -198,6 +281,27 @@ def list_resumes(db: Session = Depends(get_db)) -> list[dict]:
     return [resume_out(resume) for resume in resumes]
 
 
+@app.delete("/jobs/{job_id}")
+def delete_job(job_id: int, db: Session = Depends(get_db)) -> dict:
+    job = db.get(JobDescription, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    db.delete(job)
+    db.commit()
+    return {"deleted": True, "id": job_id}
+
+
+@app.delete("/resumes/{resume_id}")
+def delete_resume(resume_id: int, db: Session = Depends(get_db)) -> dict:
+    resume = db.get(Resume, resume_id)
+    if not resume:
+        raise HTTPException(status_code=404, detail="Resume not found")
+    db.query(InterviewSession).filter(InterviewSession.resume_id == resume_id).update({"resume_id": None})
+    db.delete(resume)
+    db.commit()
+    return {"deleted": True, "id": resume_id}
+
+
 @app.post("/questions/generate")
 def generate_questions(payload: GenerateQuestionsRequest, db: Session = Depends(get_db)) -> list[dict]:
     job = db.get(JobDescription, payload.job_id)
@@ -287,6 +391,7 @@ def evaluate_text(payload: EvaluateTextRequest, db: Session = Depends(get_db)) -
         question_id=question.id,
         transcript=payload.transcript,
         duration_seconds=payload.duration_seconds,
+        audio_path=payload.audio_path,
         evaluation_json=json_dumps(evaluation),
         overall_score=float(evaluation.get("overall_score", 0)),
     )
@@ -294,6 +399,20 @@ def evaluate_text(payload: EvaluateTextRequest, db: Session = Depends(get_db)) -
     db.commit()
     db.refresh(response)
     return response_out(response)
+
+
+@app.get("/responses/{response_id}/audio")
+def response_audio(response_id: int, db: Session = Depends(get_db)) -> FileResponse:
+    response = db.get(Response, response_id)
+    if not response or not response.audio_path:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    if supabase_storage_enabled() and not Path(response.audio_path).is_absolute():
+        data, content_type = download_audio_object(response.audio_path)
+        return StarletteResponse(data, media_type=content_type)
+    audio_path = Path(response.audio_path)
+    if not audio_path.exists():
+        raise HTTPException(status_code=404, detail="Recording file not found")
+    return FileResponse(audio_path, media_type="audio/mp4", filename=audio_path.name)
 
 
 @app.post("/responses/evaluate-audio")
@@ -308,16 +427,18 @@ async def evaluate_audio(
     question = db.get(Question, question_id)
     if not session or not question:
         raise HTTPException(status_code=404, detail="Session or question not found")
-    suffix = Path(file.filename or "answer.webm").suffix or ".webm"
-    audio_path = AUDIO_DIR / f"{uuid4()}{suffix}"
-    audio_path.write_bytes(await file.read())
-    transcript = await run_in_threadpool(ai_service.transcribe, audio_path)
+    temp_path, stored_audio_path = await persist_uploaded_audio(file, session.id, question.id)
+    try:
+        transcript = await run_in_threadpool(ai_service.transcribe, temp_path)
+    finally:
+        if supabase_storage_enabled():
+            temp_path.unlink(missing_ok=True)
     evaluation = await run_in_threadpool(ai_service.evaluate_answer, question.question, transcript, json_array(question.expected_themes_json), duration_seconds)
     response = Response(
         session_id=session.id,
         question_id=question.id,
         transcript=transcript,
-        audio_path=str(audio_path),
+        audio_path=stored_audio_path,
         duration_seconds=duration_seconds,
         evaluation_json=json_dumps(evaluation),
         overall_score=float(evaluation.get("overall_score", 0)),
@@ -340,11 +461,13 @@ async def transcribe_audio(
     question = db.get(Question, question_id)
     if not session or not question:
         raise HTTPException(status_code=404, detail="Session or question not found")
-    suffix = Path(file.filename or "answer.webm").suffix or ".webm"
-    audio_path = AUDIO_DIR / f"{uuid4()}{suffix}"
-    audio_path.write_bytes(await file.read())
-    transcript = await run_in_threadpool(ai_service.transcribe, audio_path)
-    return {"session_id": session.id, "question_id": question.id, "transcript": transcript, "audio_path": str(audio_path), "duration_seconds": duration_seconds}
+    temp_path, stored_audio_path = await persist_uploaded_audio(file, session.id, question.id)
+    try:
+        transcript = await run_in_threadpool(ai_service.transcribe, temp_path)
+    finally:
+        if supabase_storage_enabled():
+            temp_path.unlink(missing_ok=True)
+    return {"session_id": session.id, "question_id": question.id, "transcript": transcript, "audio_path": stored_audio_path, "duration_seconds": duration_seconds}
 
 
 @app.get("/history")
