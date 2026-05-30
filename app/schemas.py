@@ -31,6 +31,7 @@ class EvaluateTextRequest(BaseModel):
     question_id: int
     transcript: str = Field(min_length=5)
     duration_seconds: float | None = Field(default=None, ge=0)
+    audio_path: str | None = None
 
 
 class JobOut(BaseModel):
