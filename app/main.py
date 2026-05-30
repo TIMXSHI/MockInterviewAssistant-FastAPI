@@ -4,7 +4,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request as UrlRequest, urlopen
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import FileResponse, Response as StarletteResponse
@@ -406,14 +406,43 @@ def evaluate_text(payload: EvaluateTextRequest, db: Session = Depends(get_db)) -
     return response_out(response)
 
 
+def ranged_audio_response(data: bytes, content_type: str, range_header: str | None) -> StarletteResponse:
+    headers = {"Accept-Ranges": "bytes"}
+    if not range_header:
+        return StarletteResponse(data, media_type=content_type, headers=headers)
+    try:
+        unit, requested_range = range_header.split("=", 1)
+        if unit.lower() != "bytes" or "," in requested_range:
+            raise ValueError
+        start_text, end_text = requested_range.split("-", 1)
+        if start_text:
+            start = int(start_text)
+            end = int(end_text) if end_text else len(data) - 1
+        else:
+            suffix_length = int(end_text)
+            start = max(0, len(data) - suffix_length)
+            end = len(data) - 1
+        if start < 0 or end < start or start >= len(data):
+            raise ValueError
+        end = min(end, len(data) - 1)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=416,
+            detail="Requested audio range is not satisfiable.",
+            headers={"Content-Range": f"bytes */{len(data)}"},
+        ) from exc
+    headers["Content-Range"] = f"bytes {start}-{end}/{len(data)}"
+    return StarletteResponse(data[start : end + 1], status_code=206, media_type=content_type, headers=headers)
+
+
 @app.get("/responses/{response_id}/audio")
-def response_audio(response_id: int, db: Session = Depends(get_db)) -> FileResponse:
+def response_audio(response_id: int, request: Request, db: Session = Depends(get_db)) -> StarletteResponse:
     response = db.get(Response, response_id)
     if not response or not response.audio_path:
         raise HTTPException(status_code=404, detail="Recording not found")
     if supabase_storage_enabled() and not Path(response.audio_path).is_absolute():
         data, content_type = download_audio_object(response.audio_path)
-        return StarletteResponse(data, media_type=content_type)
+        return ranged_audio_response(data, content_type, request.headers.get("range"))
     audio_path = Path(response.audio_path)
     if not audio_path.exists():
         raise HTTPException(status_code=404, detail="Recording file not found")
