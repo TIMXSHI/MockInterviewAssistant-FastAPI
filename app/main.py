@@ -263,8 +263,11 @@ async def upload_resume(title: str = Form("Uploaded resume"), file: UploadFile =
     text_value = extract_upload_or_400(file, data, "resume.txt")
     if len(text_value) < 20:
         raise HTTPException(status_code=400, detail="Could not extract enough text from the uploaded resume.")
-    analysis = await run_in_threadpool(ai_service.analyze_resume, title, text_value)
-    resume = Resume(title=title, raw_text=text_value, analysis_json=json_dumps(analysis))
+    uploaded_name = Path(file.filename or "").name
+    effective_title = uploaded_name if title.strip() in ("", "Uploaded resume", "Candidate resume") else title.strip()
+    effective_title = (effective_title or "Uploaded resume")[:255]
+    analysis = await run_in_threadpool(ai_service.analyze_resume, effective_title, text_value)
+    resume = Resume(title=effective_title, raw_text=text_value, analysis_json=json_dumps(analysis))
     db.add(resume)
     db.commit()
     db.refresh(resume)
