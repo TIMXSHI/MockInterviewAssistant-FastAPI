@@ -150,6 +150,7 @@ def resume_out(resume: Resume) -> dict:
     return {
         "id": resume.id,
         "title": resume.title,
+        "raw_text": resume.raw_text,
         "analysis": json_loads(resume.analysis_json, {}),
         "created_at": resume.created_at,
     }
@@ -192,6 +193,7 @@ def session_out(session: InterviewSession, responses: list[Response] | None = No
         "job": {
             "id": session.job.id,
             "title": session.job.title,
+            "raw_text": session.job.raw_text,
             "analysis": json_loads(session.job.analysis_json, {}),
             "created_at": session.job.created_at,
         }
@@ -231,7 +233,7 @@ def analyze_job(payload: AnalyzeJobRequest, db: Session = Depends(get_db)) -> di
     db.add(job)
     db.commit()
     db.refresh(job)
-    return {"id": job.id, "title": job.title, "analysis": analysis, "created_at": job.created_at}
+    return {"id": job.id, "title": job.title, "raw_text": job.raw_text, "analysis": analysis, "created_at": job.created_at}
 
 
 def extract_upload_or_400(file: UploadFile, data: bytes, default_name: str) -> str:
@@ -252,7 +254,7 @@ async def upload_job(title: str = Form("Uploaded role"), file: UploadFile = File
     db.add(job)
     db.commit()
     db.refresh(job)
-    return {"id": job.id, "title": job.title, "analysis": analysis, "created_at": job.created_at}
+    return {"id": job.id, "title": job.title, "raw_text": job.raw_text, "analysis": analysis, "created_at": job.created_at}
 
 
 @app.post("/resumes/upload")
@@ -272,7 +274,7 @@ async def upload_resume(title: str = Form("Uploaded resume"), file: UploadFile =
 @app.get("/jobs")
 def list_jobs(db: Session = Depends(get_db)) -> list[dict]:
     jobs = db.query(JobDescription).order_by(JobDescription.created_at.desc()).all()
-    return [{"id": job.id, "title": job.title, "analysis": json_loads(job.analysis_json, {}), "created_at": job.created_at} for job in jobs]
+    return [{"id": job.id, "title": job.title, "raw_text": job.raw_text, "analysis": json_loads(job.analysis_json, {}), "created_at": job.created_at} for job in jobs]
 
 
 @app.get("/resumes")
