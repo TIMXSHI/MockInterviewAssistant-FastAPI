@@ -52,19 +52,22 @@ def extract_text_from_upload(filename: str, data: bytes) -> str:
     temp_path.parent.mkdir(exist_ok=True)
     temp_path.write_bytes(data)
     try:
-        if suffix == ".pdf":
+        if suffix == ".pdf" or data.startswith(b"%PDF-"):
             reader = PdfReader(str(temp_path))
-            return "\n".join(page.extract_text() or "" for page in reader.pages).strip()
-        if suffix == ".docx":
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        elif suffix == ".docx" or data.startswith(b"PK"):
             doc = Document(str(temp_path))
-            return "\n".join(paragraph.text for paragraph in doc.paragraphs).strip()
-        return data.decode("utf-8", errors="ignore").strip()
+            text = "\n".join(paragraph.text for paragraph in doc.paragraphs)
+        else:
+            text = data.decode("utf-8", errors="ignore")
+        return text.replace("\x00", "").strip()
     finally:
         temp_path.unlink(missing_ok=True)
 
 
 def compact_text(value: str, limit: int) -> str:
-    return " ".join(value.split())
+    compacted = " ".join(value.split())
+    return compacted[:limit] if limit > 0 else compacted
 
 
 def string_list(value: Any) -> list[str]:
