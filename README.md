@@ -182,10 +182,10 @@ They are injected into the application at runtime. Credentials must not be commi
 ### Required Production Settings
 
 ```text
-DATABASE_URL=postgresql://postgres.PROJECT_REF:PASSWORD@aws-0-REGION.pooler.supabase.com:6543/postgres?sslmode=require
+DATABASE_URL
 OPENAI_LLM_API_KEY=your_openai_key
 OPENAI_WHISPER_API_KEY=your_openai_key
-CORS_ORIGINS=*
+CORS_ORIGINS
 ```
 
 `SUPABASE_DATABASE_URL` can be used instead of `DATABASE_URL`. If neither database variable is configured, the API fails at startup rather than silently using a local database.
@@ -197,10 +197,10 @@ For a public production deployment, replace `CORS_ORIGINS=*` with the permitted 
 Configure these values to persist interview recordings outside the Azure App Service filesystem:
 
 ```text
-SUPABASE_URL=https://PROJECT_REF.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-SUPABASE_STORAGE_BUCKET=interview-recordings
-DEFAULT_USER_ID=default-user
+SUPABASE_URL
+SUPABASE_SERVICE_ROLE_KEY
+SUPABASE_STORAGE_BUCKET
+DEFAULT_USER_ID
 ```
 
 The Supabase service-role key is a backend-only secret. Never expose it in Android or frontend code.
